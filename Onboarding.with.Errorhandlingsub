@@ -1,0 +1,668 @@
+{
+  "name": "Employee_Onboarding_Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "onboard-employee",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook_trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"employee_email\"]}}",
+              "operation": "isNotEmpty"
+            },
+            {
+              "value1": "={{$json[\"employee_name\"]}}",
+              "operation": "isNotEmpty"
+            },
+            {
+              "value1": "={{$json[\"start_date\"]}}",
+              "operation": "isNotEmpty"
+            },
+            {
+              "value1": "={{$json[\"department\"]}}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "validate_input",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{{\n  \"success\": false,\n  \"error\": \"Validation failed\",\n  \"message\": \"Missing required fields: employee_email, employee_name, start_date, or department\",\n  \"timestamp\": new Date().toISOString()\n}}}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "validation_error",
+      "name": "Validation Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [650, 500]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item = $input.first().json;\n\nconst fullName = (item.employee_name || '').trim();\nconst parts = fullName.split(/\\s+/).filter(Boolean);\nconst firstName = parts[0] || '';\nconst lastName = parts.slice(1).join(' ') || '';\n\nconst employeeId = item.employee_id || `EMP_${Date.now()}`;\n\nreturn [\n  {\n    json: {\n      employee_id: employeeId,\n      employee_email: (item.employee_email || '').toLowerCase().trim(),\n      employee_name: fullName,\n      first_name: firstName,\n      last_name: lastName,\n      start_date: item.start_date,\n      department: item.department,\n      role: item.role || 'Employee',\n      manager_email: item.manager_email || '',\n      manager_name: item.manager_name || '',\n      location: item.location || 'remote',\n      timezone: item.timezone || 'UTC',\n      equipment_needed: Array.isArray(item.equipment_needed) ? item.equipment_needed : [],\n      custom_fields: item.custom_fields && typeof item.custom_fields === 'object' ? item.custom_fields : {},\n      provisioning_config: {\n        create_hr: item.provisioning_config?.create_hr !== false,\n        create_communication: item.provisioning_config?.create_communication !== false,\n        create_email: item.provisioning_config?.create_email !== false,\n        create_password: item.provisioning_config?.create_password !== false\n      },\n      _transformed_at: new Date().toISOString()\n    }\n  }\n];"
+      },
+      "id": "transform_data",
+      "name": "Transform Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://example-hr-system.local/api/employees",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "employee_id": "={{$json.employee_id}}",
+          "first_name": "={{$json.first_name}}",
+          "last_name": "={{$json.last_name}}",
+          "email": "={{$json.employee_email}}",
+          "department": "={{$json.department}}",
+          "role": "={{$json.role}}",
+          "start_date": "={{$json.start_date}}",
+          "manager_email": "={{$json.manager_email}}",
+          "status": "active"
+        },
+        "options": {}
+      },
+      "id": "hr_system",
+      "name": "HR System",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [850, 100],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_HR_CREDENTIAL_ID",
+          "name": "HR API"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://example-comms.local/api/users",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "user_id": "={{$json.employee_id}}",
+          "email": "={{$json.employee_email}}",
+          "first_name": "={{$json.first_name}}",
+          "last_name": "={{$json.last_name}}",
+          "department": "={{$json.department}}",
+          "channels": "={{$json.department}}"
+        },
+        "options": {}
+      },
+      "id": "communication_system",
+      "name": "Communication Platform",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [850, 220],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_COMMS_CREDENTIAL_ID",
+          "name": "Communication API"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://example-email.local/api/users",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "email": "={{$json.employee_email}}",
+          "first_name": "={{$json.first_name}}",
+          "last_name": "={{$json.last_name}}",
+          "department": "={{$json.department}}",
+          "license_type": "standard",
+          "groups": "={{$json.department}}"
+        },
+        "options": {}
+      },
+      "id": "email_system",
+      "name": "Email System",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [850, 340],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_EMAIL_CREDENTIAL_ID",
+          "name": "Email API"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://example-password-manager.local/api/users",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "user_id": "={{$json.employee_id}}",
+          "email": "={{$json.employee_email}}",
+          "name": "={{$json.employee_name}}",
+          "department": "={{$json.department}}",
+          "vault_access": "={{$json.department}}"
+        },
+        "options": {}
+      },
+      "id": "password_system",
+      "name": "Password Manager",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [850, 460],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_PASSWORD_CREDENTIAL_ID",
+          "name": "Password Manager API"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const input = $input.first();\nconst isError = input.error || (input.statusCode && input.statusCode >= 400);\nconst response = input.json || {};\n\nconst success = !isError && (response.id || response.user_id || response.success || response.created);\n\nreturn [\n  {\n    json: {\n      hr_status: success ? 'success' : 'failed',\n      hr_failed: !success,\n      hr_user_id: response.id || response.user_id || null,\n      hr_error: isError ? (input.error?.message || response.error || 'Unknown error') : null\n    }\n  }\n];"
+      },
+      "id": "normalize_hr",
+      "name": "Normalize HR",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 100]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const input = $input.first();\nconst isError = input.error || (input.statusCode && input.statusCode >= 400);\nconst response = input.json || {};\n\nconst success = !isError && (response.id || response.user_id || response.success || response.invited || response.ok);\n\nreturn [\n  {\n    json: {\n      communication_status: success ? 'success' : 'failed',\n      communication_failed: !success,\n      comm_user_id: response.id || response.user_id || null,\n      comm_error: isError ? (input.error?.message || response.error || 'Unknown error') : null\n    }\n  }\n];"
+      },
+      "id": "normalize_communication",
+      "name": "Normalize Communication",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 220]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const input = $input.first();\nconst isError = input.error || (input.statusCode && input.statusCode >= 400);\nconst response = input.json || {};\n\nconst success = !isError && (response.id || response.user_id || response.email || response.success || response.created);\n\nreturn [\n  {\n    json: {\n      email_status: success ? 'success' : 'failed',\n      email_failed: !success,\n      email_address: response.email || response.email_address || null,\n      email_error: isError ? (input.error?.message || response.error || 'Unknown error') : null\n    }\n  }\n];"
+      },
+      "id": "normalize_email",
+      "name": "Normalize Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 340]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const input = $input.first();\nconst isError = input.error || (input.statusCode && input.statusCode >= 400);\nconst response = input.json || {};\n\nconst success = !isError && (response.id || response.user_id || response.success || response.created);\n\nreturn [\n  {\n    json: {\n      password_status: success ? 'success' : 'failed',\n      password_failed: !success,\n      password_user_id: response.id || response.user_id || null,\n      password_error: isError ? (input.error?.message || response.error || 'Unknown error') : null\n    }\n  }\n];"
+      },
+      "id": "normalize_password",
+      "name": "Normalize Password",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 460]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "id": "merge_1",
+      "name": "Merge 1",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [1250, 160]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "id": "merge_2",
+      "name": "Merge 2",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [1450, 280]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "id": "merge_3",
+      "name": "Merge 3",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [1650, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item = $input.first().json;\n\nconst failedSystems = [];\nif (item.hr_failed) failedSystems.push('hr');\nif (item.communication_failed) failedSystems.push('communication');\nif (item.email_failed) failedSystems.push('email');\nif (item.password_failed) failedSystems.push('password');\n\nconst systemsProvisioned = [];\nif (!item.hr_failed) systemsProvisioned.push('hr');\nif (!item.communication_failed) systemsProvisioned.push('communication');\nif (!item.email_failed) systemsProvisioned.push('email');\nif (!item.password_failed) systemsProvisioned.push('password');\n\nreturn [\n  {\n    json: {\n      employee_id: item.employee_id,\n      employee_email: item.employee_email,\n      employee_name: item.employee_name,\n      first_name: item.first_name,\n      last_name: item.last_name,\n      start_date: item.start_date,\n      department: item.department,\n      role: item.role,\n      manager_email: item.manager_email,\n      hr_status: item.hr_status,\n      communication_status: item.communication_status,\n      email_status: item.email_status,\n      password_status: item.password_status,\n      failed_systems: failedSystems,\n      systems_provisioned: systemsProvisioned,\n      all_success: failedSystems.length === 0,\n      _evaluated_at: new Date().toISOString()\n    }\n  }\n];"
+      },
+      "id": "evaluate_results",
+      "name": "Evaluate Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"hr_status\"]}}",
+              "operation": "equals",
+              "value2": "success"
+            },
+            {
+              "value1": "={{$json[\"communication_status\"]}}",
+              "operation": "equals",
+              "value2": "success"
+            },
+            {
+              "value1": "={{$json[\"email_status\"]}}",
+              "operation": "equals",
+              "value2": "success"
+            },
+            {
+              "value1": "={{$json[\"password_status\"]}}",
+              "operation": "equals",
+              "value2": "success"
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "check_all_success",
+      "name": "Check All Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2050, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item = $input.first().json;\n\nconst failedSystems = [];\nconst errorMessages = {};\n\nif (item.hr_failed) {\n  failedSystems.push('hr');\n  errorMessages.hr = item.hr_error || 'HR system failed';\n}\nif (item.communication_failed) {\n  failedSystems.push('communication');\n  errorMessages.communication = item.comm_error || 'Communication platform failed';\n}\nif (item.email_failed) {\n  failedSystems.push('email');\n  errorMessages.email = item.email_error || 'Email system failed';\n}\nif (item.password_failed) {\n  failedSystems.push('password');\n  errorMessages.password = item.password_error || 'Password manager failed';\n}\n\nconst errorSummary = failedSystems.map(sys => `${sys}: ${errorMessages[sys]}`).join('; ');\n\nreturn [\n  {\n    json: {\n      employee_id: item.employee_id,\n      employee_email: item.employee_email,\n      employee_name: item.employee_name,\n      department: item.department,\n      start_date: item.start_date,\n      failed_systems: failedSystems,\n      error_messages: errorMessages,\n      error_summary: errorSummary,\n      systems_provisioned: item.systems_provisioned,\n      notification_payload: {\n        event: 'employee_onboarding_failed',\n        severity: 'high',\n        employee_id: item.employee_id,\n        employee_email: item.employee_email,\n        failed_systems: failedSystems,\n        error_summary: errorSummary,\n        timestamp: new Date().toISOString()\n      },\n      _formatted_at: new Date().toISOString()\n    }\n  }\n];"
+      },
+      "id": "format_error_data",
+      "name": "Format Error Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2250, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://example-notification.local/webhook",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{$json.notification_payload}}",
+        "options": {}
+      },
+      "id": "send_error_notification",
+      "name": "Send Error Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2450, 400],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{{\n  \"success\": true,\n  \"employee_id\": $json[\"employee_id\"],\n  \"employee_email\": $json[\"employee_email\"],\n  \"employee_name\": $json[\"employee_name\"],\n  \"message\": \"Employee onboarding completed successfully\",\n  \"completion_time\": new Date().toISOString(),\n  \"systems_provisioned\": $json[\"systems_provisioned\"]\n}}}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "success_response",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2650, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{{\n  \"success\": false,\n  \"employee_id\": $json[\"employee_id\"],\n  \"employee_email\": $json[\"employee_email\"],\n  \"message\": \"Employee onboarding partially failed\",\n  \"failed_systems\": $json[\"failed_systems\"],\n  \"systems_provisioned\": $json[\"systems_provisioned\"],\n  \"error\": \"One or more required systems failed to provision. Check failed_systems for details.\",\n  \"error_summary\": $json[\"error_summary\"],\n  \"timestamp\": new Date().toISOString()\n}}}",
+        "options": {
+          "responseCode": 500
+        }
+      },
+      "id": "error_response",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2650, 400]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "Transform Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validation Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform Data": {
+      "main": [
+        [
+          {
+            "node": "HR System",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Communication Platform",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Email System",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Password Manager",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HR System": {
+      "main": [
+        [
+          {
+            "node": "Normalize HR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Communication Platform": {
+      "main": [
+        [
+          {
+            "node": "Normalize Communication",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email System": {
+      "main": [
+        [
+          {
+            "node": "Normalize Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Password Manager": {
+      "main": [
+        [
+          {
+            "node": "Normalize Password",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize HR": {
+      "main": [
+        [
+          {
+            "node": "Merge 1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Communication": {
+      "main": [
+        [
+          {
+            "node": "Merge 1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Normalize Email": {
+      "main": [
+        [
+          {
+            "node": "Merge 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Password": {
+      "main": [
+        [
+          {
+            "node": "Merge 2",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge 1": {
+      "main": [
+        [
+          {
+            "node": "Merge 3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge 2": {
+      "main": [
+        [
+          {
+            "node": "Merge 3",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge 3": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Results": {
+      "main": [
+        [
+          {
+            "node": "Check All Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check All Success": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Error Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Error Data": {
+      "main": [
+        [
+          {
+            "node": "Send Error Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Error Notification": {
+      "main": [
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "={{$env.GLOBAL_ERROR_WORKFLOW}}",
+    "timeout": 300
+  },
+  "staticData": null,
+  "tags": ["production", "employee-onboarding", "hr-automation"],
+  "meta": {
+    "template_version": "2.0.0",
+    "last_updated": "2024-01-15",
+    "description": "Employee onboarding workflow with integrated error handling and notifications"
+  }
+}
