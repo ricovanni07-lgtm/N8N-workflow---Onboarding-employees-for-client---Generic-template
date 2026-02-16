@@ -1,0 +1,1056 @@
+{
+  "name": "Employee_Onboarding_Workflow_Production",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "onboard-employee",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "webhook_trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst headers = $input.first().headers || {};\n\nconst requiredFields = ['employee_email', 'employee_name', 'department', 'start_date'];\nconst missingFields = requiredFields.filter(f => !input[f]);\n\nconst emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\nconst invalidEmail = input.employee_email && !emailRegex.test(input.employee_email);\n\nconst idempotencyKey = headers['x-idempotency-key'] || input.idempotency_key || `EMP_${input.employee_email}_${Date.now()}`;\nconst correlationId = headers['x-correlation-id'] || input.correlation_id || `CORR_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;\n\nconst fullName = (input.employee_name || '').trim();\nconst nameParts = fullName.split(/\\s+/);\nconst firstName = nameParts[0] || '';\nconst lastName = nameParts.slice(1).join(' ') || '';\n\nconst sanitized = {\n  employee_id: input.employee_id || `EMP_${Date.now()}`,\n  idempotency_key: idempotencyKey,\n  correlation_id: correlationId,\n  employee_email: (input.employee_email || '').toLowerCase().trim(),\n  employee_name: fullName,\n  first_name: firstName,\n  last_name: lastName,\n  department: (input.department || '').trim(),\n  start_date: input.start_date,\n  role: (input.role || 'Employee').trim(),\n  manager_email: (input.manager_email || '').toLowerCase().trim(),\n  manager_name: (input.manager_name || '').trim(),\n  employee_type: ['full-time', 'part-time', 'contractor', 'intern'].includes((input.employee_type || '').toLowerCase()) ? input.employee_type.toLowerCase() : 'full-time',\n  location: (input.location || 'remote').trim(),\n  timezone: input.timezone || 'America/New_York',\n  equipment_needed: Array.isArray(input.equipment_needed) ? input.equipment_needed : [],\n  software_licenses: Array.isArray(input.software_licenses) ? input.software_licenses : ['email', 'slack'],\n  access_groups: Array.isArray(input.access_groups) ? input.access_groups : [input.department || 'general'],\n  sso_required: Boolean(input.sso_required),\n  phone_number: (input.phone_number || '').replace(/[^\\d+\\-]/g, ''),\n  personal_email: (input.personal_email || '').toLowerCase().trim(),\n  emergency_contact: {\n    name: (input.emergency_contact?.name || '').trim(),\n    phone: (input.emergency_contact?.phone || '').replace(/[^\\d+\\-]/g, ''),\n    relationship: (input.emergency_contact?.relationship || '').trim()\n  },\n  provisioning_config: {\n    create_email: input.provisioning_config?.create_email !== false,\n    create_slack: input.provisioning_config?.create_slack !== false,\n    create_hr_record: input.provisioning_config?.create_hr_record !== false,\n    create_identity: input.provisioning_config?.create_identity !== false,\n    send_welcome_email: input.provisioning_config?.send_welcome_email !== false,\n    notify_manager: input.provisioning_config?.notify_manager !== false,\n    schedule_onboarding: input.provisioning_config?.schedule_onboarding !== false\n  },\n  custom_fields: input.custom_fields && typeof input.custom_fields === 'object' ? input.custom_fields : {},\n  client_id: input.client_id || 'default',\n  received_at: new Date().toISOString(),\n  validation_errors: []\n};\n\nif (missingFields.length > 0) {\n  sanitized.validation_errors.push(`Missing required fields: ${missingFields.join(', ')}`);\n}\nif (invalidEmail) {\n  sanitized.validation_errors.push('Invalid employee email format');\n}\nif (!sanitized.first_name || !sanitized.last_name) {\n  sanitized.validation_errors.push('Employee name must include both first and last name');\n}\n\nreturn [{\n  json: sanitized,\n  pairedItem: { item: 0 }\n}];"
+      },
+      "id": "validate_enrich",
+      "name": "Validate and Enrich",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.validation_errors.length}}",
+              "operation": "equals",
+              "value2": "0"
+            }
+          ]
+        }
+      },
+      "id": "check_validation",
+      "name": "Check Validation",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{{\n  \"success\": false,\n  \"error\": \"Validation failed\",\n  \"correlation_id\": $json.correlation_id,\n  \"validation_errors\": $json.validation_errors,\n  \"timestamp\": new Date().toISOString()\n}}}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "validation_error",
+      "name": "Validation Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        850,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\nconst clientConfig = {\n  default: {\n    hr_api_url: $env.HR_API_URL || 'https://hr.internal.api/v1',\n    identity_api_url: $env.IDENTITY_API_URL || 'https://identity.internal.api/v1',\n    email_api_url: $env.EMAIL_API_URL || 'https://email.internal.api/v1',\n    slack_api_url: $env.SLACK_API_URL || 'https://slack.com/api',\n    calendar_api_url: $env.CALENDAR_API_URL || 'https://calendar.google.com/api/v1',\n    equipment_api_url: $env.EQUIPMENT_API_URL || 'https://equipment.internal.api/v1',\n    timeouts: {\n      hr: parseInt($env.HR_TIMEOUT_MS) || 15000,\n      identity: parseInt($env.IDENTITY_TIMEOUT_MS) || 10000,\n      email: parseInt($env.EMAIL_TIMEOUT_MS) || 8000,\n      slack: parseInt($env.SLACK_TIMEOUT_MS) || 8000,\n      calendar: parseInt($env.CALENDAR_TIMEOUT_MS) || 5000,\n      equipment: parseInt($env.EQUIPMENT_TIMEOUT_MS) || 10000\n    },\n    retry_policy: {\n      max_retries: parseInt($env.MAX_RETRIES) || 2,\n      backoff_ms: 2000\n    },\n    department_mappings: {\n      engineering: { slack_channel: 'dev-team', drive_folder: 'Engineering', groups: ['github-engineers', 'aws-dev'] },\n      sales: { slack_channel: 'sales-team', drive_folder: 'Sales', groups: ['salesforce', 'hubspot'] },\n      marketing: { slack_channel: 'marketing', drive_folder: 'Marketing', groups: ['marketing-tools', 'social-media'] },\n      hr: { slack_channel: 'hr-team', drive_folder: 'HR', groups: ['hr-systems', 'confidential'] },\n      finance: { slack_channel: 'finance', drive_folder: 'Finance', groups: ['quickbooks', 'expensify'] },\n      operations: { slack_channel: 'operations', drive_folder: 'Operations', groups: ['ops-tools', 'logistics'] },\n      default: { slack_channel: 'general', drive_folder: 'Shared', groups: ['all-staff'] }\n    },\n    equipment_catalog: {\n      laptop_standard: { type: 'laptop', model: 'MacBook Pro 14', cost: 2000, approval_required: false },\n      laptop_dev: { type: 'laptop', model: 'MacBook Pro 16 M3 Max', cost: 4000, approval_required: true },\n      monitor: { type: 'monitor', model: '27-inch 4K Display', cost: 600, approval_required: false },\n      chair: { type: 'furniture', model: 'Ergonomic Office Chair', cost: 800, approval_required: false },\n      desk: { type: 'furniture', model: 'Standing Desk', cost: 1200, approval_required: false },\n      phone: { type: 'mobile', model: 'iPhone 15 Pro', cost: 1200, approval_required: true },\n      headset: { type: 'accessory', model: 'Noise Cancelling Headset', cost: 300, approval_required: false }\n    },\n    onboarding_templates: {\n      welcome_email: 'employee_welcome_v2',\n      manager_notification: 'new_hire_manager_alert',\n      slack_welcome: 'team_introduction',\n      it_checklist: 'standard_it_setup'\n    }\n  }\n};\n\nconst config = clientConfig[data.client_id] || clientConfig.default;\nconst deptConfig = config.department_mappings[data.department?.toLowerCase()] || config.department_mappings.default;\n\nconst equipmentRequests = data.equipment_needed.map(eq => {\n  const catalogItem = config.equipment_catalog[eq] || { type: 'other', model: eq, cost: 0, approval_required: false };\n  return {\n    ...catalogItem,\n    requested: true,\n    employee_id: data.employee_id,\n    status: catalogItem.approval_required ? 'pending_approval' : 'approved'\n  };\n});\n\nconst requiresApproval = equipmentRequests.some(e => e.status === 'pending_approval');\n\nreturn [{\n  json: {\n    ...data,\n    config: config,\n    department_config: deptConfig,\n    equipment_requests: equipmentRequests,\n    requires_equipment_approval: requiresApproval,\n    _config_loaded: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "load_client_config",
+      "name": "Load Client Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{{\n  \"success\": true,\n  \"message\": \"Employee onboarding initiated\",\n  \"correlation_id\": $json.correlation_id,\n  \"employee_id\": $json.employee_id,\n  \"status\": \"processing\",\n  \"requires_equipment_approval\": $json.requires_equipment_approval,\n  \"estimated_completion\": \"3-5 minutes\",\n  \"status_url\": \"={{ $env.STATUS_WEBHOOK_BASE }}/status/\" + $json.correlation_id\n}}}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "accept_response",
+      "name": "202 Accepted Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$json.config.hr_api_url}}/employees",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-ID",
+              "value": "={{$json.correlation_id}}"
+            },
+            {
+              "name": "X-Idempotency-Key",
+              "value": "={{$json.idempotency_key}}_hr"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "employee_id": "={{$json.employee_id}}",
+          "first_name": "={{$json.first_name}}",
+          "last_name": "={{$json.last_name}}",
+          "email": "={{$json.employee_email}}",
+          "department": "={{$json.department}}",
+          "role": "={{$json.role}}",
+          "start_date": "={{$json.start_date}}",
+          "employee_type": "={{$json.employee_type}}",
+          "location": "={{$json.location}}",
+          "manager_email": "={{$json.manager_email}}",
+          "status": "active"
+        },
+        "options": {
+          "timeout": "={{$json.config.timeouts.hr}}"
+        }
+      },
+      "id": "create_hr_record",
+      "name": "Create HR Record",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1250,
+        100
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "={{ $env.HR_CREDENTIAL_ID }}",
+          "name": "HR API"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$json.config.identity_api_url}}/users",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-ID",
+              "value": "={{$json.correlation_id}}"
+            },
+            {
+              "name": "X-Idempotency-Key",
+              "value": "={{$json.idempotency_key}}_identity"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "user_id": "={{$json.employee_id}}",
+          "email": "={{$json.employee_email}}",
+          "first_name": "={{$json.first_name}}",
+          "last_name": "={{$json.last_name}}",
+          "department": "={{$json.department}}",
+          "groups": "={{$json.department_config.groups}}",
+          "sso_enabled": "={{$json.sso_required}}",
+          "mfa_required": true
+        },
+        "options": {
+          "timeout": "={{$json.config.timeouts.identity}}"
+        }
+      },
+      "id": "create_identity",
+      "name": "Create Identity Account",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1250,
+        220
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "={{ $env.IDENTITY_CREDENTIAL_ID }}",
+          "name": "Identity Provider"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$json.config.email_api_url}}/accounts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-ID",
+              "value": "={{$json.correlation_id}}"
+            },
+            {
+              "name": "X-Idempotency-Key",
+              "value": "={{$json.idempotency_key}}_email"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "email": "={{$json.employee_email}}",
+          "first_name": "={{$json.first_name}}",
+          "last_name": "={{$json.last_name}}",
+          "department": "={{$json.department}}",
+          "license_type": "={{$json.employee_type === 'contractor' ? 'basic' : 'business'}}",
+          "groups": "={{$json.access_groups}}"
+        },
+        "options": {
+          "timeout": "={{$json.config.timeouts.email}}"
+        }
+      },
+      "id": "create_email",
+      "name": "Create Email Account",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1250,
+        340
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "={{ $env.EMAIL_CREDENTIAL_ID }}",
+          "name": "Email Provider"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$json.config.slack_api_url}}/users.admin.invite",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-ID",
+              "value": "={{$json.correlation_id}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "email": "={{$json.employee_email}}",
+          "first_name": "={{$json.first_name}}",
+          "last_name": "={{$json.last_name}}",
+          "channels": "={{$json.department_config.slack_channel}}",
+          "team_id": "={{$env.SLACK_TEAM_ID}}"
+        },
+        "options": {
+          "timeout": "={{$json.config.timeouts.slack}}"
+        }
+      },
+      "id": "invite_slack",
+      "name": "Invite to Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1250,
+        460
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "={{ $env.SLACK_CREDENTIAL_ID }}",
+          "name": "Slack API"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$json.config.equipment_api_url}}/requests",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-ID",
+              "value": "={{$json.correlation_id}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "employee_id": "={{$json.employee_id}}",
+          "employee_email": "={{$json.employee_email}}",
+          "equipment_list": "={{$json.equipment_requests}}",
+          "delivery_address": "={{$json.location}}",
+          "priority": "={{$json.start_date < new Date(Date.now() + 7*24*60*60*1000).toISOString() ? 'urgent' : 'standard'}}"
+        },
+        "options": {
+          "timeout": "={{$json.config.timeouts.equipment}}"
+        }
+      },
+      "id": "request_equipment",
+      "name": "Request Equipment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1250,
+        580
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "={{ $env.EQUIPMENT_CREDENTIAL_ID }}",
+          "name": "Equipment API"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first();\nconst isError = input.error || (input.statusCode && input.statusCode >= 400);\nconst response = input.json || {};\n\nreturn [{\n  json: {\n    system: 'hr',\n    success: !isError && response.id,\n    status_code: input.statusCode || (isError ? 500 : 201),\n    hr_employee_id: response.id || response.employee_id || null,\n    employee_number: response.employee_number || null,\n    error: isError ? (input.error?.message || response.error || response.message) : null,\n    error_code: isError ? (response.error_code || 'HR_ERROR') : null,\n    retryable: isError && (input.statusCode >= 500 || input.code === 'ECONNREFUSED'),\n    raw_response: response\n  }\n}];"
+      },
+      "id": "normalize_hr",
+      "name": "Normalize HR Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1450,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first();\nconst isError = input.error || (input.statusCode && input.statusCode >= 400);\nconst response = input.json || {};\n\nreturn [{\n  json: {\n    system: 'identity',\n    success: !isError && response.user_id,\n    status_code: input.statusCode || (isError ? 500 : 201),\n    identity_user_id: response.user_id || response.id || null,\n    temp_password: response.temp_password || null,\n    sso_setup_url: response.sso_setup_url || null,\n    error: isError ? (input.error?.message || response.error) : null,\n    error_code: isError ? (response.error_code || 'IDENTITY_ERROR') : null,\n    retryable: isError && input.statusCode >= 500,\n    raw_response: response\n  }\n}];"
+      },
+      "id": "normalize_identity",
+      "name": "Normalize Identity Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1450,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first();\nconst isError = input.error || (input.statusCode && input.statusCode >= 400);\nconst response = input.json || {};\n\nreturn [{\n  json: {\n    system: 'email',\n    success: !isError && response.email_created,\n    status_code: input.statusCode || (isError ? 500 : 201),\n    email_address: response.email || response.email_address || null,\n    mailbox_size: response.storage_quota || null,\n    groups_added: response.groups_added || [],\n    error: isError ? (input.error?.message || response.error) : null,\n    error_code: isError ? (response.error_code || 'EMAIL_ERROR') : null,\n    retryable: isError && input.statusCode >= 500,\n    raw_response: response\n  }\n}];"
+      },
+      "id": "normalize_email",
+      "name": "Normalize Email Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1450,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first();\nconst isError = input.error || (input.statusCode && input.statusCode >= 400);\nconst response = input.json || {};\n\nreturn [{\n  json: {\n    system: 'slack',\n    success: !isError && (response.ok || response.invited),\n    status_code: input.statusCode || (isError ? 500 : 200),\n    slack_user_id: response.user_id || response.id || null,\n    invite_sent: response.ok || response.invited || false,\n    channels_joined: response.channels || [],\n    error: isError ? (input.error?.message || response.error || response.message) : null,\n    error_code: isError ? (response.error || 'SLACK_ERROR') : null,\n    retryable: isError && input.statusCode >= 500,\n    raw_response: response\n  }\n}];"
+      },
+      "id": "normalize_slack",
+      "name": "Normalize Slack Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1450,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first();\nconst isError = input.error || (input.statusCode && input.statusCode >= 400);\nconst response = input.json || {};\n\nreturn [{\n  json: {\n    system: 'equipment',\n    success: !isError && response.request_id,\n    status_code: input.statusCode || (isError ? 500 : 201),\n    request_id: response.request_id || null,\n    items_requested: response.items_count || 0,\n    approval_required: response.approval_required || false,\n    estimated_delivery: response.estimated_delivery || null,\n    error: isError ? (input.error?.message || response.error) : null,\n    error_code: isError ? (response.error_code || 'EQUIPMENT_ERROR') : null,\n    retryable: isError && input.statusCode >= 500,\n    raw_response: response\n  }\n}];"
+      },
+      "id": "normalize_equipment",
+      "name": "Normalize Equipment Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1450,
+        580
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "waitForAll",
+        "options": {}
+      },
+      "id": "merge_all_results",
+      "name": "Merge All Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        1650,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const inputs = $input.all();\nconst originalData = $input.first().json;\n\nconst results = {};\nconst errors = [];\nconst retryableSystems = [];\n\ninputs.forEach(item => {\n  const data = item.json;\n  if (data && data.system) {\n    results[data.system] = data;\n    if (!data.success) {\n      errors.push({\n        system: data.system,\n        error: data.error,\n        error_code: data.error_code,\n        retryable: data.retryable\n      });\n      if (data.retryable) {\n        retryableSystems.push(data.system);\n      }\n    }\n  }\n});\n\nconst criticalSystems = ['hr', 'identity', 'email'];\nconst criticalFailures = errors.filter(e => criticalSystems.includes(e.system));\nconst onboardingComplete = criticalFailures.length === 0;\n\nconst systemsProvisioned = Object.keys(results).filter(k => results[k].success);\nconst systemsFailed = errors.map(e => e.system);\n\nreturn [{\n  json: {\n    ...originalData,\n    provisioning_results: results,\n    summary: {\n      total_systems: Object.keys(results).length,\n      successful: systemsProvisioned.length,\n      failed: systemsFailed.length,\n      success_rate: `${systemsProvisioned.length}/${Object.keys(results).length}`,\n      all_success: errors.length === 0,\n      partial_success: errors.length > 0 && systemsProvisioned.length > 0,\n      critical_failures: criticalFailures.length,\n      onboarding_complete: onboardingComplete,\n      failed_systems: systemsFailed,\n      retryable_systems: retryableSystems,\n      requires_manual_fix: criticalFailures.length > 0 && !retryableSystems.some(s => criticalSystems.includes(s))\n    },\n    errors: errors,\n    _aggregation_time: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "aggregate_results",
+      "name": "Aggregate Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1850,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.summary.critical_failures === 0}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check_critical_success",
+      "name": "Check Critical Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2050,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$json.config.email_api_url}}/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-ID",
+              "value": "={{$json.correlation_id}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "template": "={{$json.config.onboarding_templates.welcome_email}}",
+          "to": "={{$json.employee_email}}",
+          "variables": {
+            "first_name": "={{$json.first_name}}",
+n            "employee_id": "={{$json.employee_id}}",
+            "start_date": "={{$json.start_date}}",
+            "department": "={{$json.department}}",
+            "manager_name": "={{$json.manager_name}}",
+            "slack_channel": "={{$json.department_config.slack_channel}}",
+            "temp_password": "={{$json.provisioning_results.identity.temp_password}}",
+            "sso_setup_url": "={{$json.provisioning_results.identity.sso_setup_url}}",
+            "equipment_status": "={{$json.provisioning_results.equipment.approval_required ? 'pending_approval' : 'ordered'}}"
+          }
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "send_welcome_email",
+      "name": "Send Welcome Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2250,
+        220
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "={{ $env.EMAIL_CREDENTIAL_ID }}",
+          "name": "Email Provider"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$json.config.email_api_url}}/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-ID",
+              "value": "={{$json.correlation_id}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "template": "={{$json.config.onboarding_templates.manager_notification}}",
+          "to": "={{$json.manager_email}}",
+          "variables": {
+            "manager_name": "={{$json.manager_name}}",
+            "employee_name": "={{$json.employee_name}}",
+            "employee_email": "={{$json.employee_email}}",
+            "start_date": "={{$json.start_date}}",
+            "department": "={{$json.department}}",
+            "role": "={{$json.role}}",
+n            "onboarding_status": "={{$json.summary.onboarding_complete ? 'Complete' : 'Partial - Action Required'}}",
+            "failed_systems": "={{$json.summary.failed_systems.join(', ')}}"
+          }
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "notify_manager",
+      "name": "Notify Manager",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2250,
+        340
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "={{ $env.EMAIL_CREDENTIAL_ID }}",
+          "name": "Email Provider"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$json.config.slack_api_url}}/chat.postMessage",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-ID",
+              "value": "={{$json.correlation_id}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "channel": "={{$json.department_config.slack_channel}}",
+          "text": "={{$json.config.onboarding_templates.slack_welcome}}",
+          "blocks": [
+            {
+              "type": "section",
+              "text": {
+                "type": "mrkdwn",
+                "text": "🎉 Welcome *{{$json.first_name}} {{$json.last_name}}* to the {{$json.department}} team!\\n📧 {{$json.employee_email}}\\n🗓️ Starting {{$json.start_date}}"
+              }
+            }
+          ]
+        },
+        "options": {
+          "timeout": 8000
+        }
+      },
+      "id": "slack_announcement",
+      "name": "Slack Team Announcement",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2250,
+        460
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "={{ $env.SLACK_CREDENTIAL_ID }}",
+          "name": "Slack API"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst results = data.provisioning_results;\n\nconst welcomeEmailSuccess = !$('Send Welcome Email').first().error;\nconst managerNotifySuccess = !$('Notify Manager').first().error;\nconst slackSuccess = !$('Slack Team Announcement').first().error;\n\nreturn [{\n  json: {\n    ...data,\n    notification_results: {\n      welcome_email_sent: welcomeEmailSuccess,\n      manager_notified: managerNotifySuccess,\n      team_announced: slackSuccess\n    },\n    final_status: data.summary.onboarding_complete && welcomeEmailSuccess ? 'complete' : 'partial',\n    completion_time: new Date().toISOString(),\n    next_steps: data.summary.requires_manual_fix ? ['Manual account creation for failed systems', 'Verify equipment approval'] : ['Employee starts on ' + data.start_date]\n  }\n}];"
+      },
+      "id": "finalize_results",
+      "name": "Finalize Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2450,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.final_status === 'complete'}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check_final_status",
+      "name": "Check Final Status",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2650,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{$env.SUCCESS_WORKFLOW_ID || 'employee_onboarding_success'}}",
+        "options": {
+          "waitForSubWorkflow": false
+        },
+        "workflowInputs": {
+          "mapping": [
+            {
+              "name": "employee_data",
+              "value": "={{$json}}"
+            },
+            {
+              "name": "correlation_id",
+              "value": "={{$json.correlation_id}}"
+            }
+          ]
+        }
+      },
+      "id": "success_handler",
+      "name": "Success Handler",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        2850,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{$env.FAILURE_WORKFLOW_ID || 'employee_onboarding_failure'}}",
+        "options": {
+          "waitForSubWorkflow": false
+        },
+        "workflowInputs": {
+          "mapping": [
+            {
+              "name": "employee_data",
+              "value": "={{$json}}"
+            },
+            {
+              "name": "correlation_id",
+              "value": "={{$json.correlation_id}}"
+            },
+            {
+              "name": "manual_intervention_required",
+              "value": "={{$json.summary.requires_manual_fix}}"
+            }
+          ]
+        }
+      },
+      "id": "failure_handler",
+      "name": "Failure Handler",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        2850,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst startTime = new Date(data._config_loaded);\nconst endTime = new Date();\nconst durationMs = endTime - startTime;\n\nreturn [{\n  json: {\n    event: 'employee_onboarding_completed',\n    correlation_id: data.correlation_id,\n    employee_id: data.employee_id,\n    employee_email: data.employee_email,\n    client_id: data.client_id,\n    success: data.final_status === 'complete',\n    partial: data.final_status === 'partial',\n    duration_ms: durationMs,\n    systems_summary: {\n      hr: data.provisioning_results.hr?.success || false,\n      identity: data.provisioning_results.identity?.success || false,\n      email: data.provisioning_results.email?.success || false,\n      slack: data.provisioning_results.slack?.success || false,\n      equipment: data.provisioning_results.equipment?.success || false\n    },\n    notifications: data.notification_results,\n    timestamp: endTime.toISOString()\n  }\n}];"
+      },
+      "id": "metrics_log",
+      "name": "Metrics Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3050,
+        340
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate and Enrich",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate and Enrich": {
+      "main": [
+        [
+          {
+            "node": "Check Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Validation": {
+      "main": [
+        [
+          {
+            "node": "Load Client Config",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validation Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Client Config": {
+      "main": [
+        [
+          {
+            "node": "202 Accepted Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create HR Record",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Create Identity Account",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Create Email Account",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Invite to Slack",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Request Equipment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create HR Record": {
+      "main": [
+        [
+          {
+            "node": "Normalize HR Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Identity Account": {
+      "main": [
+        [
+          {
+            "node": "Normalize Identity Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Email Account": {
+      "main": [
+        [
+          {
+            "node": "Normalize Email Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Invite to Slack": {
+      "main": [
+        [
+          {
+            "node": "Normalize Slack Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request Equipment": {
+      "main": [
+        [
+          {
+            "node": "Normalize Equipment Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize HR Result": {
+      "main": [
+        [
+          {
+            "node": "Merge All Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Identity Result": {
+      "main": [
+        [
+          {
+            "node": "Merge All Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Normalize Email Result": {
+      "main": [
+        [
+          {
+            "node": "Merge All Results",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Normalize Slack Result": {
+      "main": [
+        [
+          {
+            "node": "Merge All Results",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Normalize Equipment Result": {
+      "main": [
+        [
+          {
+            "node": "Merge All Results",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    },
+    "Merge All Results": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Results": {
+      "main": [
+        [
+          {
+            "node": "Check Critical Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Critical Success": {
+      "main": [
+        [
+          {
+            "node": "Send Welcome Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify Manager",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Welcome Email": {
+      "main": [
+        [
+          {
+            "node": "Slack Team Announcement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Manager": {
+      "main": [
+        [
+          {
+            "node": "Finalize Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Team Announcement": {
+      "main": [
+        [
+          {
+            "node": "Finalize Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Results": {
+      "main": [
+        [
+          {
+            "node": "Check Final Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Final Status": {
+      "main": [
+        [
+          {
+            "node": "Success Handler",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Success Handler": {
+      "main": [
+        [
+          {
+            "node": "Metrics Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Failure Handler": {
+      "main": [
+        [
+          {
+            "node": "Metrics Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "={{$env.GLOBAL_ERROR_WORKFLOW || 'global_error_handler'}}",
+    "timeout": 180,
+    "executionMode": "regular"
+  },
+  "staticData": null,
+  "tags": [
+    "production",
+    "employee-onboarding",
+    "hr-automation"
+  ],
+  "meta": {
+    "template_version": "3.0.0",
+    "last_updated": "2024-01-15",
+    "author": "DevOps Engineering",
+    "description": "Production employee onboarding with parallel provisioning, client customization, and comprehensive error handling"
+  }
+}
